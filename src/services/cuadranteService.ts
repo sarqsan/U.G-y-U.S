@@ -696,33 +696,41 @@ export const modificarServicioManual = async (params: {
   const copiaServicios = [...servicios];
   copiaServicios[srvIndex] = srvActual;
 
-  const validacion = validarCuadrante(copiaServicios, personas);
-  if (!validacion.valido) {
-    let erroresFiltrados = validacion.items.filter((v) => v.severidad === 'ERROR');
+  // 3. Validar restricciones:
+  // Si la operación es realizada por un Administrador, NO se aplican las restricciones de viabilidad
+  // (descanso mínimo, libre anterior/posterior, continuidad) que limitan a los usuarios comunes.
+  // El Administrador tiene plena potestad operativa para reasignar cualquier servicio directamente.
+  const esAdminOperativo = !adminInfo.rol || adminInfo.rol === 'ADMIN' || adminInfo.rol === 'SUPER_ADMIN' || esAdmin;
 
-    if (esServicioPasado) {
-      // Para servicios del pasado, permitimos el registro fáctico del mando excluyendo
-      // bloqueos de descansos posteriores (RD-05/RD-06), pero manteniendo inviolables
-      // la coherencia del día: RD-01, RD-02, RD-07, RD-08, RD-10.
-      erroresFiltrados = erroresFiltrados.filter(
-        (v) =>
-          v.codigo === 'RD-01' ||
-          v.codigo === 'RD-02' ||
-          v.codigo === 'RD-07' ||
-          v.codigo === 'RD-08' ||
-          v.codigo === 'RD-10'
-      );
-    }
+  if (!esAdminOperativo) {
+    const validacion = validarCuadrante(copiaServicios, personas);
+    if (!validacion.valido) {
+      let erroresFiltrados = validacion.items.filter((v) => v.severidad === 'ERROR');
 
-    if (erroresFiltrados.length > 0) {
-      const erroresDesc = erroresFiltrados
-        .map((v) => `• ${v.descripcion}`)
-        .join('\n');
+      if (esServicioPasado) {
+        // Para servicios del pasado, permitimos el registro fáctico del mando excluyendo
+        // bloqueos de descansos posteriores (RD-05/RD-06), pero manteniendo inviolables
+        // la coherencia del día: RD-01, RD-02, RD-07, RD-08, RD-10.
+        erroresFiltrados = erroresFiltrados.filter(
+          (v) =>
+            v.codigo === 'RD-01' ||
+            v.codigo === 'RD-02' ||
+            v.codigo === 'RD-07' ||
+            v.codigo === 'RD-08' ||
+            v.codigo === 'RD-10'
+        );
+      }
 
-      return {
-        success: false,
-        message: `El cambio solicitado genera violaciones de restricciones obligatorias:\n${erroresDesc}`,
-      };
+      if (erroresFiltrados.length > 0) {
+        const erroresDesc = erroresFiltrados
+          .map((v) => `• ${v.descripcion}`)
+          .join('\n');
+
+        return {
+          success: false,
+          message: `El cambio solicitado genera violaciones de restricciones obligatorias:\n${erroresDesc}`,
+        };
+      }
     }
   }
 
@@ -763,18 +771,20 @@ export const modificarServicioManual = async (params: {
 
   const personaAnteriorObj = personas.find((p) => p.id === personaIdAnterior);
 
-  // 6. Registrar en AuditLogs con trazabilidad completa
+  // 6. Registrar en AuditLogs con trazabilidad completa y diferenciada
   await registrarAuditLog({
     adminUid: adminInfo.uid,
     adminNombre: adminInfo.nombre,
-    accion: 'MODIFICAR_SERVICIO_MANUAL',
+    accion: esAdmin ? 'REASIGNACION_ADMINISTRATIVA' : 'MODIFICAR_SERVICIO_MANUAL',
     cuadranteId,
     fechaAfectada: srvActual.fecha,
     personaIdOriginal: personaIdAnterior,
     personaIdReal: nuevaPersonaId,
     personaNombre: nuevaPersona.nombre,
     motivo,
-    detalles: `Modificación manual administrativa ${esServicioPasado ? '[SERVICIO HISTÓRICO/PASADO]' : '[SERVICIO PRESENTE/FUTURO]'} en fecha ${srvActual.fecha}, puesto "${puestoNombre}". Titular sustituido: ${personaAnteriorObj?.nombre || personaIdAnterior} -> ${nuevaPersona.nombre}. Motivo: ${motivo}. Registrado por Administrador: ${adminInfo.nombre}.`,
+    detalles: esAdmin
+      ? `REASIGNACIÓN ADMINISTRATIVA directa realizada por el Administrador ${adminInfo.nombre} (${adminInfo.uid}) en fecha ${srvActual.fecha}, puesto "${puestoNombre}". Titular anterior: ${personaAnteriorObj?.nombre || personaIdAnterior} -> Reasignado a: ${nuevaPersona.nombre}. Motivo: ${motivo || 'Reasignación operativa por orden del mando'}. Operación autorizada directamente sin restricciones de viabilidad de usuarios.`
+      : `Modificación manual administrativa ${esServicioPasado ? '[SERVICIO HISTÓRICO/PASADO]' : '[SERVICIO PRESENTE/FUTURO]'} en fecha ${srvActual.fecha}, puesto "${puestoNombre}". Titular sustituido: ${personaAnteriorObj?.nombre || personaIdAnterior} -> ${nuevaPersona.nombre}. Motivo: ${motivo}. Registrado por: ${adminInfo.nombre}.`,
     cambios: [
       {
         campo: `${slotTipo}.personaIdReal`,
@@ -1199,23 +1209,26 @@ export const aplicarCambioServiciosAutorizado = async (params: {
   }
   saveLocalCache();
 
-  // 5. Persistir en Firestore
+  // 5. Persistir en Firestore de forma atómica
   try {
+    const batch = writeBatch(db);
     const srvRef = doc(db, CUADRANTES_COLLECTION, cuadranteId, 'servicios', srvActual.id);
-    await updateDoc(srvRef, { ...srvActual });
+    batch.update(srvRef, { ...srvActual });
 
     if (srvDevActual) {
       const srvDevRef = doc(db, CUADRANTES_COLLECTION, cuadranteId, 'servicios', srvDevActual.id);
-      await updateDoc(srvDevRef, { ...srvDevActual });
+      batch.update(srvDevRef, { ...srvDevActual });
     }
 
     const cuadranteRef = doc(db, CUADRANTES_COLLECTION, cuadranteId);
-    await updateDoc(cuadranteRef, {
+    batch.update(cuadranteRef, {
       ...(cuadrante?.metricasEquilibrio ? { metricasEquilibrio: cuadrante.metricasEquilibrio } : {}),
       ...(cuadrante?.metricasEquilibrioUS ? { metricasEquilibrioUS: cuadrante.metricasEquilibrioUS } : {}),
       fechaModificacion: new Date().toISOString(),
       modificadoPorUid: adminInfo.uid,
     });
+
+    await batch.commit();
   } catch (err: any) {
     console.warn('Persistencia Firestore diferida:', err.message || err);
   }

@@ -3,6 +3,9 @@ import { Persona, ServicioDia, SlotServicioTipo } from '../../types';
 import {
   crearSolicitudCambio,
   validarViabilidadCambio,
+  validarViabilidadPermuta,
+  getCandidatosViablesPermuta,
+  CandidatoPermuta,
 } from '../../services/cambiosService';
 import {
   ArrowRightLeft,
@@ -214,8 +217,10 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
     return lista.sort((a, b) => a.servicio.fecha.localeCompare(b.servicio.fecha));
   }, [servicios, currentPersona.id, hoyStr, isUS]);
 
+  const [modalidad, setModalidad] = useState<'PERMUTA' | 'CAMBIO_INDIVIDUAL'>('PERMUTA');
   const [selectedServicioKey, setSelectedServicioKey] = useState<string>('');
   const [destinatarioId, setDestinatarioId] = useState<string>('');
+  const [servicioPermutaKey, setServicioPermutaKey] = useState<string>('');
   const [proponeDevolucion, setProponeDevolucion] = useState<boolean>(false);
   const [fechaDevolucionPropuesta, setFechaDevolucionPropuesta] = useState<string>('');
   const [motivo, setMotivo] = useState<string>('');
@@ -224,9 +229,11 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
   const [enviando, setEnviando] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [solicitudEnviadaConExito, setSolicitudEnviadaConExito] = useState<{
+    modalidad: 'PERMUTA' | 'CAMBIO_INDIVIDUAL';
     destinatarioNombre: string;
     destinatarioEmpleo: string;
     fecha: string;
+    fechaDevolucion?: string;
   } | null>(null);
 
   // Inicializar o auto-seleccionar servicio si viene preseleccionado
@@ -260,7 +267,21 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
     (item) => item.key === selectedServicioKey
   );
 
-  // Calcular compañeros COMPATIBLES en tiempo real para el servicio seleccionado
+  // 1. Candidatos viables para PERMUTA simultánea (evalúa la viabilidad atómica del resultado final)
+  const candidatosPermuta: CandidatoPermuta[] = useMemo(() => {
+    if (!itemSeleccionado) return [];
+    return getCandidatosViablesPermuta(
+      currentPersona,
+      itemSeleccionado.servicio.fecha,
+      servicios,
+      personas,
+      itemSeleccionado.slotTipo,
+      itemSeleccionado.tipoCambio,
+      hoyStr
+    );
+  }, [itemSeleccionado, currentPersona, servicios, personas, hoyStr]);
+
+  // 2. Calcular compañeros COMPATIBLES para cambio individual unilateral
   const candidatosCompatibles = useMemo(() => {
     if (!itemSeleccionado) return [];
 
@@ -279,7 +300,7 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
           (p) => p.activo && p.empleo === currentPersona.empleo && p.id !== currentPersona.id
         );
 
-    // Evaluar compatibilidad dura con el motor de reglas
+    // Evaluar compatibilidad con el motor de reglas individual
     const compatibles = companerosFiltrados.filter((dest) => {
       const check = validarViabilidadCambio(
         currentPersona,
@@ -296,22 +317,83 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
     return compatibles.sort((a, b) => a.nombre.localeCompare(b.nombre));
   }, [itemSeleccionado, personas, currentPersona, servicios, isUS]);
 
-  // Auto-seleccionar primer candidato compatible si el seleccionado ya no es compatible
+  // Auto-seleccionar primer candidato compatible al cambiar de modalidad o servicio
   useEffect(() => {
-    if (candidatosCompatibles.length > 0) {
-      if (!destinatarioId || !candidatosCompatibles.some((c) => c.id === destinatarioId)) {
-        setDestinatarioId(candidatosCompatibles[0].id);
+    if (modalidad === 'PERMUTA') {
+      if (candidatosPermuta.length > 0) {
+        if (!destinatarioId || !candidatosPermuta.some((c) => c.persona.id === destinatarioId)) {
+          setDestinatarioId(candidatosPermuta[0].persona.id);
+        }
+      } else {
+        setDestinatarioId('');
       }
     } else {
-      setDestinatarioId('');
+      if (candidatosCompatibles.length > 0) {
+        if (!destinatarioId || !candidatosCompatibles.some((c) => c.id === destinatarioId)) {
+          setDestinatarioId(candidatosCompatibles[0].id);
+        }
+      } else {
+        setDestinatarioId('');
+      }
     }
-  }, [candidatosCompatibles]);
+  }, [modalidad, candidatosPermuta, candidatosCompatibles]);
 
   const destinatarioSeleccionado = personas.find((p) => p.id === destinatarioId);
 
-  // Pre-validación
+  // Servicios disponibles del compañero para permutar
+  const serviciosPermutaDisponibles = useMemo(() => {
+    if (modalidad !== 'PERMUTA' || !destinatarioId) return [];
+    const cand = candidatosPermuta.find((c) => c.persona.id === destinatarioId);
+    return cand ? cand.serviciosViables : [];
+  }, [modalidad, destinatarioId, candidatosPermuta]);
+
+  useEffect(() => {
+    if (modalidad === 'PERMUTA') {
+      if (serviciosPermutaDisponibles.length > 0) {
+        if (
+          !servicioPermutaKey ||
+          !serviciosPermutaDisponibles.some(
+            (s) => `${s.servicioId}_${s.slotTipo}` === servicioPermutaKey
+          )
+        ) {
+          setServicioPermutaKey(
+            `${serviciosPermutaDisponibles[0].servicioId}_${serviciosPermutaDisponibles[0].slotTipo}`
+          );
+        }
+      } else {
+        setServicioPermutaKey('');
+      }
+    }
+  }, [modalidad, serviciosPermutaDisponibles]);
+
+  const servicioPermutaSeleccionado = useMemo(() => {
+    if (modalidad !== 'PERMUTA' || !servicioPermutaKey) return null;
+    return (
+      serviciosPermutaDisponibles.find(
+        (s) => `${s.servicioId}_${s.slotTipo}` === servicioPermutaKey
+      ) || null
+    );
+  }, [modalidad, servicioPermutaKey, serviciosPermutaDisponibles]);
+
+  // Pre-validación en tiempo real
   const validacionEnVivo = useMemo(() => {
     if (!itemSeleccionado || !destinatarioSeleccionado) return null;
+
+    if (modalidad === 'PERMUTA') {
+      if (!servicioPermutaSeleccionado) return null;
+      return validarViabilidadPermuta({
+        solicitante: currentPersona,
+        destinatario: destinatarioSeleccionado,
+        fechaServicioA: itemSeleccionado.servicio.fecha,
+        fechaServicioB: servicioPermutaSeleccionado.fecha,
+        servicios,
+        slotTipoA: itemSeleccionado.slotTipo,
+        slotTipoB: servicioPermutaSeleccionado.slotTipo,
+        tipoCambioA: itemSeleccionado.tipoCambio,
+        tipoCambioB: 'SERVICIO',
+      });
+    }
+
     return validarViabilidadCambio(
       currentPersona,
       destinatarioSeleccionado,
@@ -321,9 +403,16 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
       itemSeleccionado.slotTipo,
       itemSeleccionado.tipoTurnoUS
     );
-  }, [itemSeleccionado, destinatarioSeleccionado, currentPersona, servicios]);
+  }, [
+    modalidad,
+    itemSeleccionado,
+    destinatarioSeleccionado,
+    servicioPermutaSeleccionado,
+    currentPersona,
+    servicios,
+  ]);
 
-  // Posibles guardias del destinatario para proponer devolución
+  // Posibles guardias del destinatario para proponer devolución en cambio individual
   const serviciosDestinatarioFuturos = useMemo(() => {
     if (!destinatarioSeleccionado) return [];
     const lista: { id: string; fecha: string; label: string; slotTipo?: SlotServicioTipo }[] = [];
@@ -380,12 +469,17 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!itemSeleccionado || !destinatarioSeleccionado) {
-      setErrorMsg('Por favor selecciona un servicio/imaginaria y un compañero compatible.');
+      setErrorMsg('Por favor selecciona un servicio/imaginaria y un compañero.');
+      return;
+    }
+
+    if (modalidad === 'PERMUTA' && !servicioPermutaSeleccionado) {
+      setErrorMsg('Debes seleccionar el servicio del compañero que asumirás en la permuta.');
       return;
     }
 
     if (validacionEnVivo && !validacionEnVivo.valido) {
-      setErrorMsg(validacionEnVivo.motivo || 'El cambio genera incompatibilidades en el cuadrante.');
+      setErrorMsg(validacionEnVivo.motivo || 'La operación genera incompatibilidades en el cuadrante.');
       return;
     }
 
@@ -413,6 +507,7 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
       const res = await crearSolicitudCambio({
         cuadranteId,
         tipoCambio: itemSeleccionado.tipoCambio,
+        modalidad,
         servicioId: itemSeleccionado.servicio.id,
         fechaServicio: itemSeleccionado.servicio.fecha,
         puesto: currentPersona.empleo,
@@ -421,17 +516,36 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
         solicitanteUid: currentUid,
         destinatario: destinatarioSeleccionado,
         motivo,
-        servicioDevolucionId: srvDevolucion?.id,
-        servicioDevolucionFecha: proponeDevolucion ? fechaDevolucionPropuesta : undefined,
+        servicioDevolucionId:
+          modalidad === 'PERMUTA'
+            ? servicioPermutaSeleccionado?.servicioId
+            : srvDevolucion?.id,
+        servicioDevolucionFecha:
+          modalidad === 'PERMUTA'
+            ? servicioPermutaSeleccionado?.fecha
+            : proponeDevolucion
+            ? fechaDevolucionPropuesta
+            : undefined,
+        servicioDevolucionSlot:
+          modalidad === 'PERMUTA'
+            ? servicioPermutaSeleccionado?.slotTipo
+            : srvDevolucion?.slotTipo,
         firmaSolicitante: JSON.stringify(firmaDigital),
         servicios,
       });
 
       if (res.success) {
         setSolicitudEnviadaConExito({
+          modalidad,
           destinatarioNombre: destinatarioSeleccionado.nombre,
           destinatarioEmpleo: destinatarioSeleccionado.empleo,
           fecha: itemSeleccionado.label,
+          fechaDevolucion:
+            modalidad === 'PERMUTA'
+              ? servicioPermutaSeleccionado?.fecha
+              : proponeDevolucion
+              ? fechaDevolucionPropuesta
+              : undefined,
         });
         onSuccess();
       } else {
@@ -480,10 +594,20 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
                 <ShieldCheck className="w-8 h-8" />
               </div>
               <h4 className="text-base font-black text-slate-900">
-                ¡Solicitud de Cambio Enviada Correctamente!
+                {solicitudEnviadaConExito.modalidad === 'PERMUTA'
+                  ? '¡Solicitud de Permuta Enviada Correctamente!'
+                  : '¡Solicitud de Cambio Enviada Correctamente!'}
               </h4>
               <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                Tu solicitud para <strong>{solicitudEnviadaConExito.fecha}</strong> ha sido registrada con tu firma electrónica.
+                {solicitudEnviadaConExito.modalidad === 'PERMUTA' ? (
+                  <>
+                    Tu propuesta de permuta mutua para ceder el día <strong>{solicitudEnviadaConExito.fecha}</strong> y asumir el servicio del día <strong>{solicitudEnviadaConExito.fechaDevolucion}</strong> ha sido registrada con tu firma electrónica.
+                  </>
+                ) : (
+                  <>
+                    Tu solicitud de cesión para <strong>{solicitudEnviadaConExito.fecha}</strong> ha sido registrada con tu firma electrónica.
+                  </>
+                )}
               </p>
             </div>
 
@@ -538,6 +662,40 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+          {/* Selector de Modalidad: PERMUTA (Intercambio mutuo) vs CAMBIO INDIVIDUAL (Cesión) */}
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+            <button
+              type="button"
+              onClick={() => {
+                setModalidad('PERMUTA');
+                setErrorMsg(null);
+              }}
+              className={`py-2 px-3 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                modalidad === 'PERMUTA'
+                  ? 'bg-white text-blue-700 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5" />
+              <span>Permuta (Intercambio)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setModalidad('CAMBIO_INDIVIDUAL');
+                setErrorMsg(null);
+              }}
+              className={`py-2 px-3 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                modalidad === 'CAMBIO_INDIVIDUAL'
+                  ? 'bg-white text-blue-700 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <User className="w-3.5 h-3.5" />
+              <span>Cambio Individual</span>
+            </button>
+          </div>
+
           {errorMsg && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -551,7 +709,7 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 flex items-center gap-1.5">
               <Calendar className="w-4 h-4 text-slate-500" />
-              1. Servicio o Imaginaria a Cambiar
+              1. Tu Servicio o Imaginaria a {modalidad === 'PERMUTA' ? 'Permutar' : 'Ceder'}
             </label>
             {misServiciosFuturos.length === 0 ? (
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-500 text-center">
@@ -572,109 +730,209 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
             )}
           </div>
 
-          {/* 2. Selección de Compañero Filtrado por Compatibilidad Estricta */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                <User className="w-4 h-4 text-slate-500" />
-                2. Compañero Destinatario ({isUS ? 'U.S. Seguridad' : currentPersona.empleo})
-              </label>
-              <span className="text-[11px] font-semibold text-slate-500">
-                {candidatosCompatibles.length} compatible(s)
-              </span>
-            </div>
-
-            {candidatosCompatibles.length === 0 ? (
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
-                <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <div>
-                  <strong>Sin candidatos compatibles disponibles:</strong>{' '}
-                  {isUS
-                    ? 'Todos los compañeros de la U.S. tienen asignado servicio en esa fecha, incompatibilidad de solapamiento nocturno/diurno (24h prohibidas) o imaginaria en días adyacentes.'
-                    : 'Todos los compañeros de tu empleo tienen servicio asignado en esa fecha o en días adyacentes (delante y detrás de un servicio de 24h debe haber siempre un día libre).'}
+          {/* MODO PERMUTA: Selección simultánea con evaluación atómica sobre resultado final */}
+          {modalidad === 'PERMUTA' ? (
+            <>
+              {/* 2. Selección de Compañero para Permuta */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <User className="w-4 h-4 text-slate-500" />
+                    2. Compañero con el que Permutas ({currentPersona.empleo})
+                  </label>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {candidatosPermuta.length} compañero(s) con guardias viables
+                  </span>
                 </div>
-              </div>
-            ) : (
-              <select
-                value={destinatarioId}
-                onChange={(e) => setDestinatarioId(e.target.value)}
-                className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
-              >
-                {candidatosCompatibles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nombre} ({p.grupo || (isUS ? 'U.S.' : 'U.G.')}) — Compatible
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
 
-          {/* Indicador de Viabilidad */}
-          {validacionEnVivo && validacionEnVivo.valido && (
-            <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>
-                <strong>CAMBIO COMPATIBLE:</strong>{' '}
-                {isUS
-                  ? 'Cumple la normativa de la U.S. (sin solapamientos nocturno-diurno ni 24h continuas; descanso e imaginarias compatibles).'
-                  : 'El compañero no tiene servicios en fechas adyacentes. Descanso reglamentario de 24h respetado (un día libre antes y después).'}
-              </span>
-            </div>
-          )}
-
-          {/* 3. Propuesta de Devolución Recíproca (Opcional) */}
-          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={proponeDevolucion}
-                onChange={(e) => setProponeDevolucion(e.target.checked)}
-                className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4"
-              />
-              <span className="text-xs font-bold text-slate-800">
-                Proponer devolver el servicio en una fecha concreta
-              </span>
-            </label>
-
-            {proponeDevolucion && (
-              <div className="pt-2">
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  Fecha propuesta para cubrir al compañero:
-                </label>
-                {serviciosDestinatarioFuturos.length > 0 ? (
+                {candidatosPermuta.length === 0 ? (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>No hay compañeros con servicios permutables para esta fecha:</strong>{' '}
+                      No se encuentran servicios de otros compañeros que, una vez intercambiados simultáneamente, permitan a ambos disfrutar del descanso reglamentario obligatorio (libre antes y libre después).
+                    </div>
+                  </div>
+                ) : (
                   <select
-                    value={fechaDevolucionPropuesta}
-                    onChange={(e) => setFechaDevolucionPropuesta(e.target.value)}
-                    className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-lg p-2"
+                    value={destinatarioId}
+                    onChange={(e) => setDestinatarioId(e.target.value)}
+                    className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
                   >
-                    <option value="">-- Seleccionar fecha de su cuadrante --</option>
-                    {serviciosDestinatarioFuturos.map((s) => (
-                      <option key={s.id} value={s.fecha}>
-                        {s.label}
+                    {candidatosPermuta.map((c) => (
+                      <option key={c.persona.id} value={c.persona.id}>
+                        {c.persona.nombre} ({c.persona.grupo || 'U.G.'}) — {c.serviciosViables.length} servicio(s) intercambiable(s)
                       </option>
                     ))}
                   </select>
-                ) : (
-                  <input
-                    type="date"
-                    min={itemSeleccionado?.servicio.fecha || hoyStr}
-                    value={fechaDevolucionPropuesta}
-                    onChange={(e) => setFechaDevolucionPropuesta(e.target.value)}
-                    className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-lg p-2"
-                  />
                 )}
               </div>
-            )}
-          </div>
 
-          {/* 4. Motivo Opcional */}
+              {/* 3. Selección del Servicio del Compañero a Intercambiar */}
+              {destinatarioSeleccionado && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                    <ArrowRightLeft className="w-4 h-4 text-blue-600" />
+                    3. Servicio de {destinatarioSeleccionado.nombre} que asumirás tú
+                  </label>
+                  {serviciosPermutaDisponibles.length === 0 ? (
+                    <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-500">
+                      Este compañero no tiene servicios viables para permutar con tu fecha.
+                    </div>
+                  ) : (
+                    <select
+                      value={servicioPermutaKey}
+                      onChange={(e) => setServicioPermutaKey(e.target.value)}
+                      className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
+                    >
+                      {serviciosPermutaDisponibles.map((s) => (
+                        <option key={`${s.servicioId}_${s.slotTipo}`} value={`${s.servicioId}_${s.slotTipo}`}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+
+              {/* Visualización del Resultado Final del Intercambio Simultáneo */}
+              {servicioPermutaSeleccionado && destinatarioSeleccionado && itemSeleccionado && (
+                <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl space-y-2 text-xs text-blue-950">
+                  <div className="font-bold flex items-center gap-1.5 text-blue-900">
+                    <ArrowRightLeft className="w-4 h-4 text-blue-600" />
+                    <span>Resultado Final de la Permuta Simultánea:</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                    <div className="p-2 bg-white rounded-lg border border-blue-100 shadow-2xs">
+                      <span className="font-bold text-slate-800 block">Tú ({currentPersona.nombre}):</span>
+                      <span className="text-emerald-700 font-semibold block">✓ Quedas libre: día {itemSeleccionado.servicio.fecha}</span>
+                      <span className="text-blue-700 font-semibold block">➜ Asumes servicio: día {servicioPermutaSeleccionado.fecha}</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-blue-100 shadow-2xs">
+                      <span className="font-bold text-slate-800 block">{destinatarioSeleccionado.nombre}:</span>
+                      <span className="text-emerald-700 font-semibold block">✓ Queda libre: día {servicioPermutaSeleccionado.fecha}</span>
+                      <span className="text-blue-700 font-semibold block">➜ Asume tu servicio: día {itemSeleccionado.servicio.fecha}</span>
+                    </div>
+                  </div>
+                  {validacionEnVivo && validacionEnVivo.valido && (
+                    <div className="flex items-start gap-1.5 text-emerald-800 font-medium pt-1 text-[11px]">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>PERMUTA VÁLIDA:</strong> El resultado final cumple la normativa de descansos de 24h (libre antes y después) para ambos efectivos tras el intercambio simultáneo.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            /* MODO CAMBIO INDIVIDUAL: Cesión unilateral */
+            <>
+              {/* 2. Selección de Compañero Filtrado por Compatibilidad Estricta */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <User className="w-4 h-4 text-slate-500" />
+                    2. Compañero Destinatario ({isUS ? 'U.S. Seguridad' : currentPersona.empleo})
+                  </label>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {candidatosCompatibles.length} compatible(s)
+                  </span>
+                </div>
+
+                {candidatosCompatibles.length === 0 ? (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>Sin candidatos compatibles disponibles:</strong>{' '}
+                      {isUS
+                        ? 'Todos los compañeros de la U.S. tienen asignado servicio en esa fecha, incompatibilidad de solapamiento nocturno/diurno o imaginaria en días adyacentes.'
+                        : 'Todos los compañeros de tu empleo tienen servicio asignado en esa fecha o en días adyacentes.'}
+                    </div>
+                  </div>
+                ) : (
+                  <select
+                    value={destinatarioId}
+                    onChange={(e) => setDestinatarioId(e.target.value)}
+                    className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
+                  >
+                    {candidatosCompatibles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.nombre} ({p.grupo || (isUS ? 'U.S.' : 'U.G.')}) — Compatible
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Indicador de Viabilidad Cambio Individual */}
+              {validacionEnVivo && validacionEnVivo.valido && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    <strong>CAMBIO COMPATIBLE:</strong>{' '}
+                    {isUS
+                      ? 'Cumple la normativa de la U.S. (sin solapamientos nocturno-diurno ni 24h continuas; descanso e imaginarias compatibles).'
+                      : 'El compañero no tiene servicios en fechas adyacentes. Descanso reglamentario de 24h respetado.'}
+                  </span>
+                </div>
+              )}
+
+              {/* 3. Propuesta de Devolución Recíproca (Opcional) */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={proponeDevolucion}
+                    onChange={(e) => setProponeDevolucion(e.target.checked)}
+                    className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4"
+                  />
+                  <span className="text-xs font-bold text-slate-800">
+                    Proponer devolver el servicio en una fecha concreta
+                  </span>
+                </label>
+
+                {proponeDevolucion && (
+                  <div className="pt-2">
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Fecha propuesta para cubrir al compañero:
+                    </label>
+                    {serviciosDestinatarioFuturos.length > 0 ? (
+                      <select
+                        value={fechaDevolucionPropuesta}
+                        onChange={(e) => setFechaDevolucionPropuesta(e.target.value)}
+                        className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-lg p-2"
+                      >
+                        <option value="">-- Seleccionar fecha de su cuadrante --</option>
+                        {serviciosDestinatarioFuturos.map((s) => (
+                          <option key={s.id} value={s.fecha}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="date"
+                        min={itemSeleccionado?.servicio.fecha || hoyStr}
+                        value={fechaDevolucionPropuesta}
+                        onChange={(e) => setFechaDevolucionPropuesta(e.target.value)}
+                        className="w-full text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-lg p-2"
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* 4. Motivo */}
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              4. Motivo del Cambio
+              4. Motivo {modalidad === 'PERMUTA' ? 'de la Permuta' : 'del Cambio'}
             </label>
             <textarea
               rows={2}
-              placeholder="Asuntos propios, cambio acordado, conciliación personal/familiar, etc."
+              placeholder="Asuntos propios, permuta acordada, conciliación personal/familiar, etc."
               value={motivo}
               onChange={(e) => setMotivo(e.target.value)}
               className="w-full text-xs text-slate-900 bg-white border border-slate-300 rounded-xl px-3.5 py-2 focus:ring-2 focus:ring-slate-900 focus:outline-hidden"
@@ -688,7 +946,7 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
               <span>Firma Electrónica del Solicitante:</span>
             </div>
             <div className="text-[11px] text-blue-900/90 leading-tight">
-              Certifico la veracidad de la presente solicitud y el compromiso de cumplimiento del servicio acordado una vez ratificado.
+              Certifico la veracidad de la presente solicitud y el compromiso de cumplimiento del servicio acordado una vez ratificado por el Mando.
             </div>
             <label className="flex items-center gap-2 cursor-pointer pt-1">
               <input
@@ -708,7 +966,7 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-100 font-bold transition"
+              className="px-4 py-2 text-xs text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-100 font-bold transition cursor-pointer"
             >
               Cancelar
             </button>
@@ -717,15 +975,21 @@ export const SolicitarCambioModal: React.FC<SolicitarCambioModalProps> = ({
               disabled={
                 !itemSeleccionado ||
                 !destinatarioSeleccionado ||
-                candidatosCompatibles.length === 0 ||
+                (modalidad === 'PERMUTA'
+                  ? candidatosPermuta.length === 0 || !servicioPermutaSeleccionado
+                  : candidatosCompatibles.length === 0) ||
                 (validacionEnVivo !== null && !validacionEnVivo.valido) ||
                 !firmaAceptada ||
                 enviando
               }
-              className="px-5 py-2.5 text-xs text-white bg-slate-900 hover:bg-slate-800 rounded-xl font-bold flex items-center gap-1.5 transition disabled:opacity-40 shadow-xs"
+              className="px-5 py-2.5 text-xs text-white bg-slate-900 hover:bg-slate-800 rounded-xl font-bold flex items-center gap-1.5 transition disabled:opacity-40 shadow-xs cursor-pointer"
             >
               <Send className="w-3.5 h-3.5" />
-              {enviando ? 'Firmando y Enviando...' : 'Firmar y Enviar Solicitud'}
+              {enviando
+                ? 'Procesando...'
+                : modalidad === 'PERMUTA'
+                ? 'Firmar y Solicitar Permuta'
+                : 'Firmar y Enviar Solicitud'}
             </button>
           </div>
         </form>

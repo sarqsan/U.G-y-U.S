@@ -81,6 +81,9 @@ export type TipoAccionAudit =
   | 'ACEPTAR_CAMBIO'
   | 'RECHAZAR_CAMBIO'
   | 'APROBAR_CAMBIO'
+  | 'APROBAR_PERMUTA'
+  | 'APROBAR_CAMBIO_INDIVIDUAL'
+  | 'REASIGNACION_ADMINISTRATIVA'
   | 'RECHAZAR_CAMBIO_ADMIN'
   | 'COMUNICAR_AUSENCIA'
   | 'SOLICITAR_COBERTURA'
@@ -403,7 +406,11 @@ export type SlotServicioTipo =
   | 'rol1_imag'
   | 'rol2_imag'
   | 'imaginaria_rol1'
-  | 'imaginaria_rol2';
+  | 'imaginaria_rol2'
+  | 'diurno_1'
+  | 'diurno_2'
+  | 'nocturno_1'
+  | 'nocturno_2';
 
 export interface SolicitudCambio {
   id: string;
@@ -415,6 +422,7 @@ export interface SolicitudCambio {
   puesto: Empleo; // 'ROL 1' | 'ROL 2'
   slotTipo: SlotServicioTipo;
   tipoCambio?: 'SERVICIO' | 'IMAGINARIA';
+  modalidad?: 'CAMBIO_INDIVIDUAL' | 'PERMUTA';
 
   // Solicitante (usuario A)
   solicitantePersonaId: string;

@@ -152,13 +152,23 @@ export const CuadranteEdicionManualModal: React.FC<CuadranteEdicionManualModalPr
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
-          {esServicioPasado && (
+          {esServicioPasado ? (
             <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 dark:border-amber-800/60 dark:bg-amber-950/30 flex items-start gap-2 text-amber-800 dark:text-amber-200">
               <History className="h-4 w-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
               <div>
                 <p className="font-bold text-[12px]">Modificación de Servicio Pasado / Histórico</p>
                 <p className="text-[11px] text-amber-700/90 dark:text-amber-300/90 mt-0.5">
-                  Autorización de Administrador activa: El cambio reflejará fielmente el servicio realizado sin regenerar el cuadrante ni alterar la rotación de otros días. Quedará registrado en el historial de auditoría.
+                  Autorización de Administrador activa: El cambio reflejará fielmente el servicio realizado sin regenerar el cuadrante ni alterar la rotación de otros días. Quedará registrado en el historial de auditoría como REASIGNACIÓN ADMINISTRATIVA.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/80 p-3 dark:border-blue-900/50 dark:bg-blue-950/30 flex items-start gap-2 text-blue-900 dark:text-blue-200">
+              <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5 text-blue-600 dark:text-blue-400" />
+              <div>
+                <p className="font-bold text-[12px]">Reasignación Administrativa Directa</p>
+                <p className="text-[11px] text-blue-800/90 dark:text-blue-300/90 mt-0.5">
+                  Como Administrador, puedes reasignar este servicio directamente sin estar sujeto a las restricciones de descanso o viabilidad que limitan a los usuarios. Quedará registrado en la auditoría como <strong>REASIGNACIÓN ADMINISTRATIVA</strong>.
                 </p>
               </div>
             </div>
